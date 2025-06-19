@@ -1,0 +1,160 @@
+--------------------------------------------- HÀ MINH TIẾN ---------------------------------------------
+-- Đăng nhập
+CREATE PROCEDURE DangNhap
+as
+begin
+	SELECT 
+        CASE
+            WHEN IS_MEMBER('Admin') = 1 THEN 'Admin'
+            WHEN IS_MEMBER('NhanVien_BanVe') = 1 THEN 'NhanVien_BanVe'
+            WHEN IS_MEMBER('NhanVien_BanDoAn') = 1 THEN 'NhanVien_BanDoAn'
+            ELSE 'Unknown'
+        END AS RoleName;
+end
+
+EXEC DangNhap
+GRANT EXECUTE ON DangNhap TO public;
+
+-- 1. Trigger cập nhật tổng doanh thu của hóa đơn
+CREATE TRIGGER tg_CapNhatThanhTienHD
+ON VE
+AFTER INSERT, DELETE
+AS
+BEGIN
+    UPDATE HOADON
+    SET THANHTIEN = (SELECT SUM(GIAGHE) FROM VE WHERE MAHD = HOADON.MAHD)
+    WHERE MAHD IN (SELECT MAHD FROM INSERTED UNION SELECT MAHD FROM DELETED);
+END
+
+drop trigger tg_CapNhatThanhTienHD
+
+-- 2. Tạo hóa đơn mới
+CREATE PROCEDURE proc_TaoHD
+    @MAHD NVARCHAR(20),
+    @MAKH NVARCHAR(20),
+    @MANV NVARCHAR(20),
+    @NGAYLAP DATE
+AS
+BEGIN
+    INSERT INTO HOADON (MAHD, MAKH, MANV, NGAYLAP)
+    VALUES (@MAHD, @MAKH, @MANV, @NGAYLAP);
+END
+GRANT EXECUTE ON proc_TaoHD TO phanthie;
+
+-- 3. Thêm vé vào hóa đơn
+CREATE PROCEDURE proc_ThemVe
+    @MAVE NVARCHAR(20),
+    @MASUATCHIEU NVARCHAR(20),
+    @MAHD NVARCHAR(20),
+    @TENGHE INT,
+	@GIAGHE DECIMAL
+AS
+BEGIN
+    INSERT INTO VE (MAVE, MASUATCHIEU, MAHD, TENGHE, GIAGHE)
+    VALUES (@MAVE, @MASUATCHIEU, @MAHD, @TENGHE, @GIAGHE);
+END
+GRANT EXECUTE ON proc_ThemVe TO phanthie;
+
+-- 4. Procduce hiển thị phim
+CREATE PROC proc_HienThiPhim
+AS
+BEGIN
+	SELECT MAPHIM, TENPHIM
+	FROM PHIM
+END
+GRANT EXECUTE ON proc_HienThiPhim TO phanthie;
+
+-- 5. Procduce cập nhật ghế đã đặt nếu trùng suất chiếu
+CREATE FUNCTION func_CapNhatGheTrung
+(
+    @ngaychieu DATE,
+    @maphim NVARCHAR(50),
+    @masc NVARCHAR(50)
+)
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT ve.TENGHE, ve.MASUATCHIEU
+    FROM VE ve
+    WHERE ve.MASUATCHIEU = (
+        SELECT sc.MASC
+        FROM SUATCHIEU sc
+        WHERE sc.MAPHIM = @maphim
+          AND sc.NGAYCHIEU = @ngaychieu
+          AND sc.MASC = @masc
+    )
+);
+
+GRANT SELECT ON func_CapNhatGheTrung TO phanthie;
+
+-- 6. Procduce hiển thị suất chiếu
+CREATE PROCEDURE proc_GetSuatChieu
+    @maPhim NVARCHAR(50),
+    @ngayChieu DATE
+AS
+BEGIN
+    SELECT 
+        MASC, 
+        MAPHIM, 
+        NGAYCHIEU, 
+        CONCAT(LEFT(THOIGIANBD, 5), ' - ', LEFT(THOIGIANKT, 5)) AS ThoiGian
+    FROM 
+        SUATCHIEU
+    WHERE 
+        MAPHIM = @maPhim
+        AND NGAYCHIEU = @ngayChieu
+END
+
+GRANT EXECUTE ON proc_GetSuatChieu TO phanthie;
+
+-- 7. Sinh mã tự động
+CREATE FUNCTION func_SinhMaTuDong
+(
+    @tt NVARCHAR(10),  -- Tiền tố (VD: 'HD', 'KH')
+    @tenBang NVARCHAR(50),  -- Tên bảng
+    @ngay NVARCHAR(8)  -- Ngày định dạng 'ddMMyyyy'
+)
+RETURNS NVARCHAR(20)
+AS
+BEGIN
+    DECLARE @maCuoi NVARCHAR(20)
+    DECLARE @maMoi NVARCHAR(20)
+    DECLARE @soThuTu INT
+
+    -- Lấy mã cuối cùng theo tiền tố và ngày
+    IF (@tenBang = 'HOADON')
+    BEGIN
+        SET @maCuoi = (
+            SELECT TOP 1 MAHD
+            FROM HOADON
+            WHERE MAHD LIKE @tt + @ngay + '%' -- Điều kiện LIKE dựa trên tiền tố và ngày
+            ORDER BY MAHD DESC
+        );
+    END
+	ELSE
+    BEGIN
+        SET @maCuoi = (
+            SELECT TOP 1 MAVE
+            FROM VE
+            WHERE MAVE LIKE @tt + @ngay + '%'
+            ORDER BY MAVE DESC
+        );
+    END
+
+    -- Kiểm tra nếu không có mã nào
+    IF @maCuoi IS NULL
+    BEGIN
+        SET @maMoi = @tt + @ngay + '001'
+    END
+    ELSE
+    BEGIN
+        -- Tăng số thứ tự
+        SET @soThuTu = CAST(SUBSTRING(@maCuoi, LEN(@tt) + LEN(@ngay) + 1, 3) AS INT) + 1
+        SET @maMoi = @tt + @ngay + RIGHT('000' + CAST(@soThuTu AS NVARCHAR), 3)
+    END
+
+    RETURN @maMoi
+END
+drop function func_SinhMaTuDong
+GRANT EXECUTE ON func_SinhMaTuDong TO phanthie;
